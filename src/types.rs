@@ -1,3 +1,5 @@
+use crate::structs::{PROCESS_INFORMATION, STARTUPINFOA};
+
 pub type INT8 = i8;
 pub type INT16 = i16;
 pub type INT32 = i32;
@@ -47,3 +49,9 @@ pub type PHANDLE = *mut PVOID;
 
 pub type LPSTR = *mut CHAR;
 pub type LPBYTE = *mut BYTE;
+pub type LPCSTR = *const CHAR;
+
+pub type NTSTATUS = i32;
+pub type LPVOID = PVOID;
+pub type LPSTARTUPINFOA = *mut STARTUPINFOA;
+pub type LPPROCESS_INFORMATION = *mut PROCESS_INFORMATION;

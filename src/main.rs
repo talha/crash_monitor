@@ -1,25 +1,30 @@
+#![allow(non_snake_case)]
+#![allow(dead_code)]
+#![allow(non_camel_case_types)]
+#![allow(unused)]
 mod enums;
 mod types;
 mod structs;
+mod functions;
 
 extern crate winapi;
 
 use std::io;
 use std::path::Path;
 use std::process::{Command, exit, ExitStatus};
-use winapi::um::processthreadsapi::{CreateProcessA};
 use winapi::um::winnt::{LPCSTR};
 use std::ffi::{CStr, CString};
 use std::ptr::null_mut;
 use winapi::ctypes::c_ulong;
 use winapi::um::winuser::{MessageBoxA};
 use winapi::um::winbase::{DEBUG_PROCESS};
-use winapi::um::processthreadsapi::{STARTUPINFOA, PROCESS_INFORMATION};
 use winapi::shared::minwindef::{LPBYTE, WORD, DWORD};
 use winapi::um::winnt::{HANDLE, LPSTR};
-use winapi::shared::ntdef::{NULL};
-use winapi::um::synchapi::{WaitForSingleObject};
 use winapi::um::winbase::{INFINITE};
+use structs::{PROCESS_INFORMATION, STARTUPINFOA};
+use enums::NULL;
+use functions::{CreateProcessA, WaitForSingleObject};
+
 // Trait std::os::windows::process::ExitStatusExt
 // https://grep.app/search?q=std%3A%3Aos%3A%3Awindows%3A%3Aprocess%3A%3AExitStatusExt
 
@@ -49,7 +54,7 @@ fn call_messagebox() {
 
 fn main() -> io::Result<()> {
     // run calc.exe
-    let mut calc_exe = CString::new(r"C:\Windows\System32\calc.exe").unwrap().into_raw();
+    let calc_exe = CString::new(r"C:\Windows\System32\calc.exe").unwrap().into_raw();
     let creation_fags = DEBUG_PROCESS; // DEBUG_FLAG
     let mut startupinfo = STARTUPINFOA {
         cb: std::mem::size_of::<STARTUPINFOA>() as DWORD,
@@ -67,26 +72,26 @@ fn main() -> io::Result<()> {
         wShowWindow: 0x0 as WORD,
         cbReserved2: NULL as WORD,
         lpReserved2: NULL as LPBYTE,
-        hStdInput: NULL as HANDLE,
-        hStdOutput: NULL as HANDLE,
-        hStdError: NULL as HANDLE,
+        hStdInput: NULL,
+        hStdOutput: NULL,
+        hStdError: NULL,
     };
 
     let mut process_information = PROCESS_INFORMATION {
-        hProcess: NULL as HANDLE,
-        hThread: NULL as HANDLE,
+        hProcess: NULL,
+        hThread: NULL,
         dwProcessId: 0,
         dwThreadId: 0,
     };
     unsafe {
         let process = CreateProcessA(calc_exe,
-                                     NULL as LPSTR,
-                                     std::ptr::null_mut(),
-                                     std::ptr::null_mut(),
+                                     NULL as crate::types::LPSTR,
+                                     NULL,
+                                     NULL,
                                      0,
                                      creation_fags,
                                      NULL,
-                                     NULL as LPCSTR,
+                                     NULL as crate::types::LPCSTR,
                                      &mut startupinfo,
                                      &mut process_information,
         );
@@ -96,6 +101,5 @@ fn main() -> io::Result<()> {
             WaitForSingleObject(process_information.hProcess, INFINITE);
         }
     }
-
     Ok(())
 }
