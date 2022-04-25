@@ -6,14 +6,14 @@ version = 3
 name = "crash_monitor"
 version = "0.1.0"
 dependencies = [
- "windows-sys",
+ "windows",
 ]
 
 [[package]]
-name = "windows-sys"
+name = "windows"
 version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c700bb45cfcbdb738ce92c41fc13e512514d4eaf6a99e8c87e2260a227175c16"
+checksum = "08746b4b7ac95f708b3cccceb97b7f9a21a8916dd47fc99b0e6aaf7208f26fd7"
 dependencies = [
  "windows_aarch64_msvc",
  "windows_i686_gnu",
