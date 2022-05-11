@@ -83,9 +83,8 @@ impl Debugger for Debugee {
                 print!("[*] Process is successfully launched!\n");
                 print!("[*] Process ID: {}\n", process_information.dwProcessId);
                 self.pid = process_information.dwProcessId;
-                self.h_process = self.open_process(process_information.dwProcessId);
-                self.debugger_active = true;
-
+                // attach internal
+                self.attach_process(self.pid);
                 dbg!(self);
                 //sleep(Duration::from_secs(10));
                 //WaitForSingleObject(process_information.hProcess, 0xFFFFFFFF);
@@ -214,11 +213,13 @@ fn main() -> io::Result<()> {
         context: WOW64_CONTEXT::default(),
     };
     let mut calc_exe = r"C:\Windows\System32\calc.exe".to_string();
-
+    /*
     let mut temp = String::new();
     println!("Enter process id to attach:");
     let pid: u32 = io::stdin().read_line(&mut temp).unwrap().try_into().unwrap();
     x.attach_process(pid);
+    */
+    x.load(calc_exe);
     x.run();
     Ok(())
 }
