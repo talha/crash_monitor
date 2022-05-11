@@ -1,93 +1,224 @@
+#[allow(unused_imports)]
 use std::ffi::c_void;
-use std::{cmp, io, mem};
+use std::io;
 use std::path::Path;
-use std::process::{Command, exit, ExitStatus};
 use std::ptr;
 use windows::{
-    core::*, Data::Xml::Dom::*, Win32::Foundation::*, Win32::System::Threading::*,
-    Win32::UI::WindowsAndMessaging::*
+    core::*, Win32::Foundation::*, Win32::System::Threading::*, Win32::System::Diagnostics::Debug::*,
+    Win32::UI::WindowsAndMessaging::*, Data::Xml::Dom::*, Win32::System::LibraryLoader::*,
 };
+
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use std::time::Duration;
 use std::thread::sleep;
+use std::ffi::CString;
 
-// Trait std::os::windows::process::ExitStatusExt
-// https://grep.app/search?q=std%3A%3Aos%3A%3Awindows%3A%3Aprocess%3A%3AExitStatusExt
+const CONTEXT_FULL: u32 = 0x00010007;
+const CONTEXT_DEBUG_REGISTERS: u32 = 0x00010010;
 
-fn monitor(process_name: String) -> io::Result<ExitStatus> {
-    let monitor = Command::new(process_name).output()?;
-    println!("Output: {:#?}", monitor);
+// https://docs.microsoft.com/en-us/windows/win32/debug/creating-a-basic-debugger
+// https://docs.microsoft.com/en-us/windows/win32/debug/process-functions-for-debugging
 
-    Ok(monitor.status)
+#[derive(Debug)]
+struct Debugee {
+    h_process: HANDLE,
+    pid: u32,
+    debugger_active: bool,
+    h_thread: HANDLE,
+    context: WOW64_CONTEXT,
 }
 
-fn call_monitor() -> io::Result<()> {
-    let process_name = r"C:\Users\zet\Desktop\vulnserver\vulnserver.exe".to_string();
-    println!("{}", process_name);
-    let exit_code = monitor(process_name);
-    println!("Exit Code: {:?}", exit_code);
-    Ok(())
+pub trait Debugger {
+    fn run(&mut self);
+    fn load(&mut self, path_to_binary: String) -> u32;
+    fn create_process(&mut self) -> u32;
+    fn open_process(&mut self, pid: u32) -> HANDLE;
+    fn attach_process(&mut self, pid: u32);
+    fn debug_handler(&mut self) -> u32;
+    fn open_thread(&mut self, thread_id: u32) -> HANDLE;
+    fn thread_context(&mut self, thread_id: u32, h_thread: HANDLE) -> WOW64_CONTEXT;
+    fn function_resolve(&mut self, dll: PCSTR, function: PCSTR);
+    fn detach(&mut self);
 }
-/*
-fn call_messagebox() {
-    let title = CString::new(r"this is title").unwrap();
-    let message = CString::new(r"this is message").unwrap();
-    unsafe {
-        MessageBoxA(null_mut(), message.as_ptr(), title.as_ptr(),
-                    winapi::um::winuser::MB_OK | winapi::um::winuser::MB_ICONINFORMATION);
-    }
-}
-*/
 
-fn main() -> io::Result<()> {
-    // run calc.exe
-    let mut calc_exe = PCSTR("C:\\Windows\\System32\\calc.exe\0".as_ptr());
-    let creation_fags = DEBUG_PROCESS; // DEBUG_FLAG
-    let mut startupinfo = STARTUPINFOA {
-        cb: std::mem::size_of::<STARTUPINFOA>() as u32,
-        lpReserved: PSTR(ptr::null_mut()),
-        lpDesktop: PSTR(ptr::null_mut()),
-        lpTitle: PSTR(ptr::null_mut()),
-        dwX: 0,
-        dwY: 0,
-        dwXSize: 0,
-        dwYSize: 0,
-        dwXCountChars: 0,
-        dwYCountChars: 0,
-        dwFillAttribute: 0,
-        dwFlags: STARTUPINFOW_FLAGS(0x1),
-        wShowWindow: 0x0,
-        cbReserved2: 0,
-        lpReserved2: ptr::null_mut(),
-        hStdInput: HANDLE(0),
-        hStdOutput: HANDLE(0),
-        hStdError: HANDLE(0),
-    };
-
-    let mut process_information = PROCESS_INFORMATION {
-        hProcess: HANDLE(0),
-        hThread: HANDLE(0),
-        dwProcessId: 0,
-        dwThreadId: 0,
-    };
-    unsafe {
-        let process = CreateProcessA(calc_exe,
-                                     PSTR(ptr::null_mut()),
-                                     ptr::null(),
-                                     ptr::null(),
-                                     BOOL(0),
-                                     creation_fags,
-                                     0 as *mut c_void,
-                                     PCSTR(ptr::null_mut()),
-                                     &mut startupinfo,
-                                     &mut process_information,
-        );
-        if process.0 != 0 {
-            print!("[*] We have successfully launched the process!\n");
-            print!("[*] The Process ID of running process is: {}\n", process_information.dwProcessId);
-            //sleep(Duration::from_secs(10));
-            WaitForSingleObject(process_information.hProcess, 0xFFFFFFFF);
+impl Debugger for Debugee {
+    fn run(&mut self) {
+        println!("inside run");
+        while self.debugger_active == true {
+            self.debug_handler();
         }
     }
+
+    fn load(&mut self, path_to_binary: String) -> u32 {
+        let path_to_binary = CString::new(path_to_binary).unwrap();
+        let path_to_binary = path_to_binary.as_bytes_with_nul().as_ptr();
+        dbg!(path_to_binary);
+        let creation_flags = DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS | CREATE_NEW_CONSOLE;
+        let mut startupinfo = STARTUPINFOA {
+            //dwFlags: STARTUPINFOW_FLAGS(0x1),
+            //wShowWindow: 0x1, // SW_SHOWNORMAL
+            ..Default::default()
+        };
+        dbg!(startupinfo);
+        let mut process_information = PROCESS_INFORMATION {
+            hProcess: HANDLE(0),
+            hThread: HANDLE(0),
+            dwProcessId: 0,
+            dwThreadId: 0,
+        };
+        unsafe {
+            let process = CreateProcessA(PCSTR(path_to_binary),
+                                         PSTR(ptr::null_mut()),
+                                         ptr::null(),
+                                         ptr::null(),
+                                         BOOL(0),
+                                         creation_flags,
+                                         0 as *mut c_void,
+                                         PCSTR(ptr::null_mut()),
+                                         &mut startupinfo,
+                                         &mut process_information,
+            );
+
+            if process.0 != 0 {
+                print!("[*] Process is successfully launched!\n");
+                print!("[*] Process ID: {}\n", process_information.dwProcessId);
+                self.pid = process_information.dwProcessId;
+                self.h_process = self.open_process(process_information.dwProcessId);
+                self.debugger_active = true;
+
+                dbg!(self);
+                //sleep(Duration::from_secs(10));
+                //WaitForSingleObject(process_information.hProcess, 0xFFFFFFFF);
+            }
+        }
+        0
+    }
+    fn create_process(&mut self) -> u32 {
+        todo!()
+    }
+    fn open_process(&mut self, pid: u32) -> HANDLE {
+        unsafe {
+            let handle: HANDLE = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).unwrap();
+            handle
+        }
+    }
+    fn attach_process(&mut self, pid: u32) {
+        unsafe {
+            self.h_process = self.open_process(pid);
+            if DebugActiveProcess(pid).0 == 0 {
+                self.debugger_active = true;
+                self.pid = pid
+            }
+            else {
+                println!("[-] Unable to attach to the process.");
+            }
+        }
+    }
+    fn debug_handler(&mut self) -> u32 { // get_debug_event
+        unsafe {
+            /*
+            let ex_record = EXCEPTION_RECORD::default();
+            let ex_debug_info = EXCEPTION_DEBUG_INFO{
+                ExceptionRecord: ex_record,
+                dwFirstChance: 0,
+            };
+            let debug_event_u = DEBUG_EVENT_0{
+                Exception: EXCEPTION_DEBUG_INFO::default()
+            };
+            */
+            let mut debug_event = DEBUG_EVENT::default();
+
+            //let debug_event = 
+            let continue_status = DBG_CONTINUE;
+            println!("inside debug handler");
+
+            // BUG 
+            if WaitForDebugEvent(&mut debug_event, 100).as_bool() == false {
+                println!("inside WaitForDebugEvent");
+
+                //self.h_thread = self.open_thread(debug_event.dwThreadId);
+                println!("Process ID: {}", debug_event.dwProcessId);
+                //self.context = self.thread_context(thread_id: u32, h_thread: HANDLE)
+                if debug_event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT {
+                    let exception = debug_event.u.Exception.ExceptionRecord.ExceptionCode;
+                    let exception_address = debug_event.u.Exception.ExceptionRecord.ExceptionAddress;
+
+                    if exception == EXCEPTION_ACCESS_VIOLATION {
+                        println!("Access Violation Detected.");
+                    }
+                }
+                print!("Test");
+            }
+            else {
+                ;
+            }
+        }
+        0
+    }
+    fn open_thread(&mut self, thread_id: u32) -> HANDLE {
+        unsafe {
+            let handle: HANDLE = OpenThread(THREAD_ALL_ACCESS, None, thread_id).unwrap();
+            if handle.is_invalid() == true {
+                println!("[*] Could not obtain a valid thread handle");
+                HANDLE(-1)
+            }
+            else{
+                self.h_thread
+            }
+        }
+    }
+    fn thread_context(&mut self, thread_id: u32, h_thread: HANDLE) -> WOW64_CONTEXT {
+        unsafe {
+            let mut context = WOW64_CONTEXT{ContextFlags: CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS, ..Default::default()};
+            
+            if h_thread.is_invalid() == true {
+                self.h_thread = self.open_process(thread_id);
+            }
+            if Wow64GetThreadContext(self.h_thread, &mut context).as_bool() == true {
+                println!("[+] Got thread context");
+                context
+            }
+            else {
+                println!("[*] Failed to get thread context!");
+                WOW64_CONTEXT::default()
+            }
+        }
+    }
+    fn detach(&mut self) {
+        unsafe {
+            if DebugActiveProcessStop(self.pid).as_bool() == true {
+                println!("[+] Detached successfully!");
+            }
+            else{
+                println!("[-] An error occurred while detaching");
+            }
+        }
+    }
+
+    fn function_resolve(&mut self, dll: PCSTR, function: PCSTR) {
+        unsafe {
+            let handle = GetModuleHandleA(dll).unwrap();
+            let address = GetProcAddress(handle, function);
+            let address = address.unwrap();
+            println!("printf: {}", address as usize);
+        }
+    }
+}
+
+fn main() -> io::Result<()> {
+    let mut x = Debugee {
+        h_process: HANDLE::default(),
+        pid: 0,
+        debugger_active: false,
+        h_thread: HANDLE::default(),
+        context: WOW64_CONTEXT::default(),
+    };
+    let mut calc_exe = r"C:\Windows\System32\calc.exe".to_string();
+
+    let mut temp = String::new();
+    println!("Enter process id to attach:");
+    let pid: u32 = io::stdin().read_line(&mut temp).unwrap().try_into().unwrap();
+    x.attach_process(pid);
+    x.run();
     Ok(())
 }
