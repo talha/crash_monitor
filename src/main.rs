@@ -79,7 +79,7 @@ impl Debugger for Debugee {
                 print!("[*] Process ID: {}\n", process_information.dwProcessId);
                 self.pid = process_information.dwProcessId;
                 // attach internal
-                self.attach_process(self.pid);
+                // self.attach_process(self.pid);
                 //dbg!(self);
 
                 //sleep(Duration::from_secs(10));
@@ -98,7 +98,6 @@ impl Debugger for Debugee {
             handle
         }
     }
-    // still buggy
     fn attach_process(&mut self, pid: u32) {
         unsafe {
             println!("[*] Attaching process: {}", pid);
@@ -137,7 +136,6 @@ impl Debugger for Debugee {
             let continue_status = DBG_CONTINUE;
             println!("inside debug handler");
 
-            // BUG 
             if WaitForDebugEvent(&mut debug_event, 100).as_bool() == true {
                 println!("inside WaitForDebugEvent");
 
@@ -219,13 +217,14 @@ fn main() -> io::Result<()> {
         context: WOW64_CONTEXT::default(),
     };
     let mut calc_exe = r"C:\win7calc\calc.exe".to_string();
-    /*
-    let mut temp = String::new();
+
+    let mut pid = String::new();
     println!("Enter process id to attach:");
-    let pid: u32 = io::stdin().read_line(&mut temp).unwrap().try_into().unwrap();
+    io::stdin().read_line(&mut pid).expect("Enter an integer");
+    let pid: u32 = pid.trim().parse().unwrap();
+    println!("You have entered: {}", pid);
     x.attach_process(pid);
-    */
-    x.load(calc_exe);
+    //x.load(calc_exe);
     x.run();
     Ok(())
 }
