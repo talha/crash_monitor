@@ -5,19 +5,14 @@ use std::path::Path;
 use std::ptr;
 use windows::{
     core::*, Win32::Foundation::*, Win32::System::Threading::*, Win32::System::Diagnostics::Debug::*,
-    Win32::UI::WindowsAndMessaging::*, Data::Xml::Dom::*, Win32::System::LibraryLoader::*,
+    Win32::UI::WindowsAndMessaging::*, Data::Xml::Dom::*, Win32::System::LibraryLoader::*, Win32::Security::*,
 };
-
-use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use std::time::Duration;
 use std::thread::sleep;
 use std::ffi::CString;
 
 const CONTEXT_FULL: u32 = 0x00010007;
 const CONTEXT_DEBUG_REGISTERS: u32 = 0x00010010;
-
-// https://docs.microsoft.com/en-us/windows/win32/debug/creating-a-basic-debugger
-// https://docs.microsoft.com/en-us/windows/win32/debug/process-functions-for-debugging
 
 #[derive(Debug)]
 struct Debugee {
@@ -53,10 +48,10 @@ impl Debugger for Debugee {
         let path_to_binary = CString::new(path_to_binary).unwrap();
         let path_to_binary = path_to_binary.as_bytes_with_nul().as_ptr();
         dbg!(path_to_binary);
-        let creation_flags = DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS | CREATE_NEW_CONSOLE;
+        let creation_flags = DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS;
         let mut startupinfo = STARTUPINFOA {
-            //dwFlags: STARTUPINFOW_FLAGS(0x1),
-            //wShowWindow: 0x1, // SW_SHOWNORMAL
+            dwFlags: STARTUPINFOW_FLAGS(0x1),
+            wShowWindow: 0x0,
             ..Default::default()
         };
         dbg!(startupinfo);
@@ -79,13 +74,14 @@ impl Debugger for Debugee {
                                          &mut process_information,
             );
 
-            if process.0 != 0 {
+            if process.as_bool() == true {
                 print!("[*] Process is successfully launched!\n");
                 print!("[*] Process ID: {}\n", process_information.dwProcessId);
                 self.pid = process_information.dwProcessId;
                 // attach internal
                 self.attach_process(self.pid);
-                dbg!(self);
+                //dbg!(self);
+
                 //sleep(Duration::from_secs(10));
                 //WaitForSingleObject(process_information.hProcess, 0xFFFFFFFF);
             }
@@ -97,19 +93,29 @@ impl Debugger for Debugee {
     }
     fn open_process(&mut self, pid: u32) -> HANDLE {
         unsafe {
-            let handle: HANDLE = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).unwrap();
+            let handle: HANDLE = OpenProcess(PROCESS_ALL_ACCESS, false, pid).expect("Failed to open the process");
+            println!("[+] OpenProcess is successful!");
             handle
         }
     }
+    // still buggy
     fn attach_process(&mut self, pid: u32) {
         unsafe {
+            println!("[*] Attaching process: {}", pid);
             self.h_process = self.open_process(pid);
-            if DebugActiveProcess(pid).0 == 0 {
+            let mut temp = String::new();
+            println!("Enter:");
+            io::stdin().read_line(&mut temp).unwrap();
+            println!("[*] Trying to Debug Active Process");
+            if DebugActiveProcess(pid).as_bool() == true {
                 self.debugger_active = true;
-                self.pid = pid
+                self.pid = pid;
+                println!("[+] Debugging active process!");
             }
             else {
                 println!("[-] Unable to attach to the process.");
+                let win32_error = GetLastError();
+                println!("WIN32_ERROR: {:?}, Error message: {:?}", win32_error, win32_error.to_hresult().message());
             }
         }
     }
@@ -132,7 +138,7 @@ impl Debugger for Debugee {
             println!("inside debug handler");
 
             // BUG 
-            if WaitForDebugEvent(&mut debug_event, 100).as_bool() == false {
+            if WaitForDebugEvent(&mut debug_event, 100).as_bool() == true {
                 println!("inside WaitForDebugEvent");
 
                 //self.h_thread = self.open_thread(debug_event.dwThreadId);
@@ -212,7 +218,7 @@ fn main() -> io::Result<()> {
         h_thread: HANDLE::default(),
         context: WOW64_CONTEXT::default(),
     };
-    let mut calc_exe = r"C:\Windows\System32\calc.exe".to_string();
+    let mut calc_exe = r"C:\win7calc\calc.exe".to_string();
     /*
     let mut temp = String::new();
     println!("Enter process id to attach:");
