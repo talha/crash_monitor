@@ -20,7 +20,9 @@ struct Debugee {
     pid: u32,
     debugger_active: bool,
     h_thread: HANDLE,
-    context: WOW64_CONTEXT,
+    context: WOW64_CONTEXT, // ?
+    exception: NTSTATUS,
+    exception_address: *mut c_void,
 }
 
 pub trait Debugger {
@@ -36,9 +38,22 @@ pub trait Debugger {
     fn detach(&mut self);
 }
 
+impl Default for Debugee {
+    fn default() -> Debugee {
+        Debugee {
+            h_process: Default::default(),
+            pid: 0,
+            debugger_active: false,
+            h_thread: Default::default(),
+            context: WOW64_CONTEXT::default(), // ?
+            exception: NTSTATUS::default(),
+            exception_address: std::ptr::null_mut(),
+        }
+    }
+}
+
 impl Debugger for Debugee {
     fn run(&mut self) {
-        println!("inside run");
         while self.debugger_active == true {
             self.debug_handler();
         }
@@ -56,10 +71,7 @@ impl Debugger for Debugee {
         };
         dbg!(startupinfo);
         let mut process_information = PROCESS_INFORMATION {
-            hProcess: HANDLE(0),
-            hThread: HANDLE(0),
-            dwProcessId: 0,
-            dwThreadId: 0,
+            ..Default::default()
         };
         unsafe {
             let process = CreateProcessA(PCSTR(path_to_binary),
@@ -100,6 +112,7 @@ impl Debugger for Debugee {
     }
     fn attach_process(&mut self, pid: u32) {
         unsafe {
+            // TODO check bitness of debugee and debugger
             println!("[*] Attaching process: {}", pid);
             self.h_process = self.open_process(pid);
             let mut temp = String::new();
@@ -120,40 +133,40 @@ impl Debugger for Debugee {
     }
     fn debug_handler(&mut self) -> u32 { // get_debug_event
         unsafe {
-            /*
-            let ex_record = EXCEPTION_RECORD::default();
-            let ex_debug_info = EXCEPTION_DEBUG_INFO{
-                ExceptionRecord: ex_record,
-                dwFirstChance: 0,
-            };
-            let debug_event_u = DEBUG_EVENT_0{
-                Exception: EXCEPTION_DEBUG_INFO::default()
-            };
-            */
             let mut debug_event = DEBUG_EVENT::default();
 
             //let debug_event = 
             let continue_status = DBG_CONTINUE;
-            println!("inside debug handler");
 
             if WaitForDebugEvent(&mut debug_event, 100).as_bool() == true {
-                println!("inside WaitForDebugEvent");
 
-                //self.h_thread = self.open_thread(debug_event.dwThreadId);
-                println!("Process ID: {}", debug_event.dwProcessId);
+                self.h_thread = self.open_thread(debug_event.dwThreadId);
+                println!("Event Code: {:?}, Thread ID: {}", debug_event.dwDebugEventCode, debug_event.dwThreadId);
+
+
                 //self.context = self.thread_context(thread_id: u32, h_thread: HANDLE)
                 if debug_event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT {
-                    let exception = debug_event.u.Exception.ExceptionRecord.ExceptionCode;
-                    let exception_address = debug_event.u.Exception.ExceptionRecord.ExceptionAddress;
+                    self.exception = debug_event.u.Exception.ExceptionRecord.ExceptionCode;
+                    self.exception_address = debug_event.u.Exception.ExceptionRecord.ExceptionAddress;
 
-                    if exception == EXCEPTION_ACCESS_VIOLATION {
+                    println!("Exception: {:?}, Exception Address: {:?}", self.exception, self.exception_address);
+
+                    if self.exception == EXCEPTION_ACCESS_VIOLATION {
                         println!("Access Violation Detected.");
+                        std::process::exit(1);
+                        // save the crash
+                    }
+                    if self.exception == EXCEPTION_BREAKPOINT {
+                        println!("EXCEPTION_BREAKPOINT");
+                    }
+                    if self.exception == EXCEPTION_GUARD_PAGE {
+                        println!("EXCEPTION_GUARD_PAGE");
+                    }
+                    if self.exception == EXCEPTION_SINGLE_STEP {
+                        println!("EXCEPTION_SINGLE_STEP");
                     }
                 }
-                print!("Test");
-            }
-            else {
-                ;
+                ContinueDebugEvent(debug_event.dwProcessId, debug_event.dwThreadId, continue_status.0.try_into().unwrap());
             }
         }
         0
@@ -210,11 +223,7 @@ impl Debugger for Debugee {
 
 fn main() -> io::Result<()> {
     let mut x = Debugee {
-        h_process: HANDLE::default(),
-        pid: 0,
-        debugger_active: false,
-        h_thread: HANDLE::default(),
-        context: WOW64_CONTEXT::default(),
+        ..Default::default()
     };
     let mut calc_exe = r"C:\win7calc\calc.exe".to_string();
 
