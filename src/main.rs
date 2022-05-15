@@ -6,23 +6,26 @@ use std::ptr;
 use windows::{
     core::*, Win32::Foundation::*, Win32::System::Threading::*, Win32::System::Diagnostics::Debug::*,
     Win32::UI::WindowsAndMessaging::*, Data::Xml::Dom::*, Win32::System::LibraryLoader::*, Win32::Security::*,
+    Win32::Storage::FileSystem::*, Win32::System::Kernel::*, Win32::System::Diagnostics::ToolHelp::*,
 };
 use std::time::Duration;
 use std::thread::sleep;
 use std::ffi::CString;
+use std::collections::HashMap;
 
 const CONTEXT_FULL: u32 = 0x00010007;
 const CONTEXT_DEBUG_REGISTERS: u32 = 0x00010010;
 
-#[derive(Debug)]
 struct Debugee {
     h_process: HANDLE,
     pid: u32,
     debugger_active: bool,
     h_thread: HANDLE,
-    context: WOW64_CONTEXT, // ?
+    context: CONTEXT, // ?
     exception: NTSTATUS,
     exception_address: *mut c_void,
+    thread_list: Vec<u32>,
+    thread_handles: HashMap<u32, HANDLE>,
 }
 
 pub trait Debugger {
@@ -33,8 +36,9 @@ pub trait Debugger {
     fn attach_process(&mut self, pid: u32);
     fn debug_handler(&mut self) -> u32;
     fn open_thread(&mut self, thread_id: u32) -> HANDLE;
-    fn thread_context(&mut self, thread_id: u32, h_thread: HANDLE) -> WOW64_CONTEXT;
+    fn get_thread_context(&mut self, thread_id: u32);
     fn function_resolve(&mut self, dll: PCSTR, function: PCSTR);
+    fn enumerate_threads(&mut self);
     fn detach(&mut self);
 }
 
@@ -45,9 +49,11 @@ impl Default for Debugee {
             pid: 0,
             debugger_active: false,
             h_thread: Default::default(),
-            context: WOW64_CONTEXT::default(), // ?
+            context: CONTEXT{ ContextFlags: CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS, ..Default::default()},
             exception: NTSTATUS::default(),
             exception_address: std::ptr::null_mut(),
+            thread_list: Vec::new(),
+            thread_handles: HashMap::new(),
         }
     }
 }
@@ -131,21 +137,27 @@ impl Debugger for Debugee {
             }
         }
     }
-    fn debug_handler(&mut self) -> u32 { // get_debug_event
+    fn debug_handler(&mut self) -> u32 {
         unsafe {
             let mut debug_event = DEBUG_EVENT::default();
 
-            //let debug_event = 
             let continue_status = DBG_CONTINUE;
 
             if WaitForDebugEvent(&mut debug_event, 100).as_bool() == true {
+                let create_process = CREATE_PROCESS_DEBUG_INFO::default();
+                let _ = create_process.hFile;
 
                 self.h_thread = self.open_thread(debug_event.dwThreadId);
                 println!("Event Code: {:?}, Thread ID: {}", debug_event.dwDebugEventCode, debug_event.dwThreadId);
 
+                let tid = debug_event.dwThreadId;
+                let pid = debug_event.dwProcessId;
 
-                //self.context = self.thread_context(thread_id: u32, h_thread: HANDLE)
+                //self.context = self.get_thread_context(thread_id: u32, h_thread: HANDLE)
                 if debug_event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT {
+                    let process_handle = Some(create_process.hProcess);
+                    self.thread_handles.insert(tid, create_process.hThread);
+
                     self.exception = debug_event.u.Exception.ExceptionRecord.ExceptionCode;
                     self.exception_address = debug_event.u.Exception.ExceptionRecord.ExceptionAddress;
 
@@ -153,16 +165,41 @@ impl Debugger for Debugee {
 
                     if self.exception == EXCEPTION_ACCESS_VIOLATION {
                         println!("Access Violation Detected.");
+
+                        self.get_thread_context(tid);
+                        // enumeratethreads
+                        
+                        /*
+                        CreateFileW(
+                            lpfilename: Param0,
+                            dwdesiredaccess: FILE_ACCESS_FLAGS,
+                            dwsharemode: FILE_SHARE_MODE,
+                            lpsecurityattributes: *const super::super::Security::SECURITY_ATTRIBUTES,
+                            dwcreationdisposition: FILE_CREATION_DISPOSITION,
+                            dwflagsandattributes: FILE_FLAGS_AND_ATTRIBUTES,
+                            htemplatefile: Param6
+                        );
+
+                        MiniDumpWriteDump(
+                            hprocess: Param0,
+                            processid: u32,
+                            hfile: Param2,
+                            dumptype: MINIDUMP_TYPE,
+                            exceptionparam: *const MINIDUMP_EXCEPTION_INFORMATION,
+                            userstreamparam: *const MINIDUMP_USER_STREAM_INFORMATION,
+                             callbackparam: *const MINIDUMP_CALLBACK_INFORMATION
+                        );
+                        */
                         std::process::exit(1);
                         // save the crash
                     }
-                    if self.exception == EXCEPTION_BREAKPOINT {
+                    else if self.exception == EXCEPTION_BREAKPOINT {
                         println!("EXCEPTION_BREAKPOINT");
                     }
-                    if self.exception == EXCEPTION_GUARD_PAGE {
+                    else if self.exception == EXCEPTION_GUARD_PAGE {
                         println!("EXCEPTION_GUARD_PAGE");
                     }
-                    if self.exception == EXCEPTION_SINGLE_STEP {
+                    else if self.exception == EXCEPTION_SINGLE_STEP {
                         println!("EXCEPTION_SINGLE_STEP");
                     }
                 }
@@ -183,21 +220,38 @@ impl Debugger for Debugee {
             }
         }
     }
-    fn thread_context(&mut self, thread_id: u32, h_thread: HANDLE) -> WOW64_CONTEXT {
+    fn get_thread_context(&mut self, thread_id: u32){
         unsafe {
-            let mut context = WOW64_CONTEXT{ContextFlags: CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS, ..Default::default()};
-            
-            if h_thread.is_invalid() == true {
-                self.h_thread = self.open_process(thread_id);
-            }
-            if Wow64GetThreadContext(self.h_thread, &mut context).as_bool() == true {
+            if GetThreadContext(self.thread_handles[&thread_id], &mut self.context).as_bool() == true {
                 println!("[+] Got thread context");
-                context
             }
             else {
                 println!("[*] Failed to get thread context!");
-                WOW64_CONTEXT::default()
             }
+        }
+    }
+    fn function_resolve(&mut self, dll: PCSTR, function: PCSTR) {
+        unsafe {
+            let handle = GetModuleHandleA(dll).unwrap();
+            let address = GetProcAddress(handle, function);
+            let address = address.unwrap();
+            println!("printf: {}", address as usize);
+        }
+    }
+    fn enumerate_threads(&mut self) {
+        let mut thread_entry = THREADENTRY32::default();
+
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, self.pid).unwrap();
+            thread_entry.dwSize = std::mem::size_of::<THREADENTRY32>().try_into().unwrap();
+            let success = Thread32First(snapshot, &mut thread_entry);
+            while success.as_bool() == true {
+                if thread_entry.th32OwnerProcessID == self.pid {
+                    self.thread_list.push(thread_entry.th32ThreadID);
+                }
+                let success = Thread32Next(snapshot, &mut thread_entry);
+            }
+            CloseHandle(snapshot);
         }
     }
     fn detach(&mut self) {
@@ -208,15 +262,6 @@ impl Debugger for Debugee {
             else{
                 println!("[-] An error occurred while detaching");
             }
-        }
-    }
-
-    fn function_resolve(&mut self, dll: PCSTR, function: PCSTR) {
-        unsafe {
-            let handle = GetModuleHandleA(dll).unwrap();
-            let address = GetProcAddress(handle, function);
-            let address = address.unwrap();
-            println!("printf: {}", address as usize);
         }
     }
 }
