@@ -144,19 +144,26 @@ impl Debugger for Debugee {
             let continue_status = DBG_CONTINUE;
 
             if WaitForDebugEvent(&mut debug_event, 100).as_bool() == true {
-                let create_process = CREATE_PROCESS_DEBUG_INFO::default();
-                let _ = create_process.hFile;
+                //let create_process = CREATE_PROCESS_DEBUG_INFO::default();
 
-                self.h_thread = self.open_thread(debug_event.dwThreadId);
-                println!("Event Code: {:?}, Thread ID: {}", debug_event.dwDebugEventCode, debug_event.dwThreadId);
+                //self.h_thread = self.open_thread(debug_event.dwThreadId);
+                //println!("Event Code: {:?}, Thread ID: {}", debug_event.dwDebugEventCode, debug_event.dwThreadId);
 
                 let tid = debug_event.dwThreadId;
                 let pid = debug_event.dwProcessId;
 
-                //self.context = self.get_thread_context(thread_id: u32, h_thread: HANDLE)
-                if debug_event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT {
-                    let process_handle = Some(create_process.hProcess);
-                    self.thread_handles.insert(tid, create_process.hThread);
+                if debug_event.dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT {
+                    println!("CREATE_PROCESS_DEBUG_EVENT");
+                }
+                else if debug_event.dwDebugEventCode == CREATE_THREAD_DEBUG_EVENT {
+                    println!("CREATE_THREAD_DEBUG_EVENT");
+                    let create_thread = debug_event.u.CreateThread;
+                    self.thread_handles.insert(tid, create_thread.hThread);
+                }
+                else if debug_event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT {
+                    //let process_handle = Some(create_process.hProcess);
+                    //println!("Inserting tid: {:?}, hThread: {:?}", tid, create_process.hThread);
+                    //self.thread_handles.insert(tid, create_process.hThread);
 
                     self.exception = debug_event.u.Exception.ExceptionRecord.ExceptionCode;
                     self.exception_address = debug_event.u.Exception.ExceptionRecord.ExceptionAddress;
@@ -167,7 +174,6 @@ impl Debugger for Debugee {
                         println!("Access Violation Detected.");
 
                         self.get_thread_context(tid);
-                        // enumeratethreads
                         
                         /*
                         CreateFileW(
@@ -203,6 +209,19 @@ impl Debugger for Debugee {
                         println!("EXCEPTION_SINGLE_STEP");
                     }
                 }
+                else if debug_event.dwDebugEventCode == LOAD_DLL_DEBUG_EVENT {
+                    println!("LOAD_DLL_DEBUG_EVENT");
+                }
+                else if debug_event.dwDebugEventCode == EXIT_THREAD_DEBUG_EVENT {
+                    println!("EXIT_THREAD_DEBUG_EVENT");
+                    assert!(self.thread_handles.remove(&tid).is_some(), "Got exit threat event for nonexistant thread");
+                }
+                else if debug_event.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT {
+                    println!("EXIT_PROCESS_DEBUG_EVENT");
+                }
+                else if debug_event.dwDebugEventCode == UNLOAD_DLL_DEBUG_EVENT {
+                    println!("UNLOAD_DLL_DEBUG_EVENT");
+                }
                 ContinueDebugEvent(debug_event.dwProcessId, debug_event.dwThreadId, continue_status.0.try_into().unwrap());
             }
         }
@@ -226,6 +245,8 @@ impl Debugger for Debugee {
                 println!("[+] Got thread context");
             }
             else {
+                let win32_error = GetLastError();
+                println!("WIN32_ERROR: {:?}, Error message: {:?}", win32_error, win32_error.to_hresult().message());
                 println!("[*] Failed to get thread context!");
             }
         }
