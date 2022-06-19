@@ -7,17 +7,21 @@ use windows::{
     core::*, Win32::Foundation::*, Win32::System::Threading::*, Win32::System::Diagnostics::Debug::*,
     Win32::UI::WindowsAndMessaging::*, Data::Xml::Dom::*, Win32::System::LibraryLoader::*, Win32::Security::*,
     Win32::Storage::FileSystem::*, Win32::System::Kernel::*, Win32::System::Diagnostics::ToolHelp::*,
+    Win32::System::SystemServices::*, Win32::System::Memory::*,
 };
 use std::time::Duration;
 use std::thread::sleep;
 use std::ffi::CString;
 use std::collections::HashMap;
+use std::os::windows::ffi::EncodeWide;
+use sha2::{Sha256, Digest};
 
 const CONTEXT_FULL: u32 = 0x00010007;
 const CONTEXT_DEBUG_REGISTERS: u32 = 0x00010010;
 
 struct Debugee {
     h_process: HANDLE,
+    process_handle: HANDLE,
     pid: u32,
     debugger_active: bool,
     h_thread: HANDLE,
@@ -47,6 +51,7 @@ impl Default for Debugee {
         Debugee {
             h_process: Default::default(),
             pid: 0,
+            process_handle: Default::default(),
             debugger_active: false,
             h_thread: Default::default(),
             context: CONTEXT{ ContextFlags: CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS, ..Default::default()},
@@ -154,6 +159,10 @@ impl Debugger for Debugee {
 
                 if debug_event.dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT {
                     println!("CREATE_PROCESS_DEBUG_EVENT");
+                    let create_process = debug_event.u.CreateProcessInfo;
+
+                    self.process_handle = create_process.hProcess;
+
                 }
                 else if debug_event.dwDebugEventCode == CREATE_THREAD_DEBUG_EVENT {
                     println!("CREATE_THREAD_DEBUG_EVENT");
@@ -172,32 +181,57 @@ impl Debugger for Debugee {
 
                     if self.exception == EXCEPTION_ACCESS_VIOLATION {
                         println!("Access Violation Detected.");
+                        println!("Exception: {:?}, Exception Address: {:?}", self.exception, self.exception_address);
 
                         self.get_thread_context(tid);
+                        let filename_raw = format!("crash_{:08x}_{:08x}.dmp", self.exception.0, self.exception_address as usize);
+                        let filename_c = filename_raw.clone();
+                        let filename = CString::new(filename_raw).unwrap();
+                        let filename = filename.as_bytes_with_nul().as_ptr();                        
+                        println!("Creating file");
                         
-                        /*
-                        CreateFileW(
-                            lpfilename: Param0,
-                            dwdesiredaccess: FILE_ACCESS_FLAGS,
-                            dwsharemode: FILE_SHARE_MODE,
-                            lpsecurityattributes: *const super::super::Security::SECURITY_ATTRIBUTES,
-                            dwcreationdisposition: FILE_CREATION_DISPOSITION,
-                            dwflagsandattributes: FILE_FLAGS_AND_ATTRIBUTES,
-                            htemplatefile: Param6
-                        );
+                        if !Path::new(&filename_c).is_file() {
+                            let fd = CreateFileA(
+                                PCSTR(filename),
+                                FILE_ACCESS_FLAGS(GENERIC_READ | GENERIC_WRITE),
+                                FILE_SHARE_NONE,
+                                ptr::null_mut(),
+                                CREATE_NEW,
+                                FILE_FLAGS_AND_ATTRIBUTES::default(),
+                                HANDLE::default(),
+                            );
+                            let fd = fd.unwrap();
+                            println!("File Created");
 
-                        MiniDumpWriteDump(
-                            hprocess: Param0,
-                            processid: u32,
-                            hfile: Param2,
-                            dumptype: MINIDUMP_TYPE,
-                            exceptionparam: *const MINIDUMP_EXCEPTION_INFORMATION,
-                            userstreamparam: *const MINIDUMP_USER_STREAM_INFORMATION,
-                             callbackparam: *const MINIDUMP_CALLBACK_INFORMATION
-                        );
-                        */
-                        std::process::exit(1);
-                        // save the crash
+                            let exception_record = &mut debug_event.u.Exception.ExceptionRecord;
+                            let mut ep = EXCEPTION_POINTERS {
+                                ExceptionRecord: exception_record,
+                                ContextRecord: &mut self.context,
+                            };
+
+                            let mei = MINIDUMP_EXCEPTION_INFORMATION {
+                                ThreadId: tid,
+                                ExceptionPointers: &mut ep,
+                                ClientPointers: BOOL(0),
+                            };
+                            println!("Getting MiniDump");
+
+                            let dump_status = MiniDumpWriteDump(
+                                self.process_handle,
+                                pid,
+                                fd,
+                                MiniDumpWithFullMemory | MiniDumpWithHandleData,
+                                &mei,
+                                ptr::null_mut(),
+                                ptr::null_mut()
+                            );
+                            if dump_status.as_bool() != true {
+                                println!("MiniDumpWriteDump error");
+                                let win32_error = GetLastError();
+                                println!("WIN32_ERROR: {:?}, Error message: {:?}", win32_error, win32_error.to_hresult().message());            
+                            }
+                            println!("[+] MiniDump");
+                        }
                     }
                     else if self.exception == EXCEPTION_BREAKPOINT {
                         println!("EXCEPTION_BREAKPOINT");
