@@ -136,9 +136,6 @@ impl Debugger for Debugee {
             // TODO check bitness of debugee and debugger
             println!("[*] Attaching process: {}", pid);
             self.h_process = self.open_process(pid);
-            let mut temp = String::new();
-            println!("Enter:");
-            io::stdin().read_line(&mut temp).unwrap();
 
             self.debug_set_process_kill_on_exit();
 
