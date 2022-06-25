@@ -1,23 +1,26 @@
-#[allow(unused_imports)]
-use std::ffi::c_void;
-use std::io;
-use std::path::Path;
-use std::ptr;
-use windows::{
-    core::*, Win32::Foundation::*, Win32::System::Threading::*, Win32::System::Diagnostics::Debug::*,
-    Win32::UI::WindowsAndMessaging::*, Data::Xml::Dom::*, Win32::System::LibraryLoader::*, Win32::Security::*,
-    Win32::Storage::FileSystem::*, Win32::System::Kernel::*, Win32::System::Diagnostics::ToolHelp::*,
-    Win32::System::SystemServices::*, Win32::System::Memory::*,
-};
-use std::time::Duration;
-use std::thread::sleep;
-use std::ffi::CString;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::ffi::c_void;
+use std::ffi::CString;
+use std::io;
 use std::os::windows::ffi::EncodeWide;
-use sha2::{Sha256, Digest};
+use std::path::Path;
+use std::process::Command;
+use std::ptr;
+use std::thread::sleep;
+use std::time::Duration;
+use windows::{
+    core::*, Data::Xml::Dom::*, Win32::Foundation::*, Win32::Security::*,
+    Win32::Storage::FileSystem::*, Win32::System::Diagnostics::Debug::*,
+    Win32::System::Diagnostics::ToolHelp::*, Win32::System::Kernel::*,
+    Win32::System::LibraryLoader::*, Win32::System::Memory::*, Win32::System::SystemServices::*,
+    Win32::System::Threading::*, Win32::UI::WindowsAndMessaging::*,
+};
 
 const CONTEXT_FULL: u32 = 0x00010007;
 const CONTEXT_DEBUG_REGISTERS: u32 = 0x00010010;
+
+// TODO generic GetLastError handler
 
 struct Debugee {
     h_process: HANDLE,
@@ -34,15 +37,18 @@ struct Debugee {
 
 pub trait Debugger {
     fn run(&mut self);
-    fn load(&mut self, path_to_binary: String) -> u32;
+    fn load(&mut self, path_to_binary: String);
     fn create_process(&mut self) -> u32;
     fn open_process(&mut self, pid: u32) -> HANDLE;
     fn attach_process(&mut self, pid: u32);
-    fn debug_handler(&mut self) -> u32;
+    fn debug_handler(&mut self);
     fn open_thread(&mut self, thread_id: u32) -> HANDLE;
     fn get_thread_context(&mut self, thread_id: u32);
     fn function_resolve(&mut self, dll: PCSTR, function: PCSTR);
     fn enumerate_threads(&mut self);
+    fn debug_set_process_kill_on_exit(&mut self);
+    fn terminate_process(&mut self, h_process: HANDLE);
+    fn get_process_id(&mut self, h_process: HANDLE) -> u32;
     fn detach(&mut self);
 }
 
@@ -54,7 +60,10 @@ impl Default for Debugee {
             process_handle: Default::default(),
             debugger_active: false,
             h_thread: Default::default(),
-            context: CONTEXT{ ContextFlags: CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS, ..Default::default()},
+            context: CONTEXT {
+                ContextFlags: CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS,
+                ..Default::default()
+            },
             exception: NTSTATUS::default(),
             exception_address: std::ptr::null_mut(),
             thread_list: Vec::new(),
@@ -70,7 +79,7 @@ impl Debugger for Debugee {
         }
     }
 
-    fn load(&mut self, path_to_binary: String) -> u32 {
+    fn load(&mut self, path_to_binary: String) {
         let path_to_binary = CString::new(path_to_binary).unwrap();
         let path_to_binary = path_to_binary.as_bytes_with_nul().as_ptr();
         dbg!(path_to_binary);
@@ -85,16 +94,17 @@ impl Debugger for Debugee {
             ..Default::default()
         };
         unsafe {
-            let process = CreateProcessA(PCSTR(path_to_binary),
-                                         PSTR(ptr::null_mut()),
-                                         ptr::null(),
-                                         ptr::null(),
-                                         BOOL(0),
-                                         creation_flags,
-                                         0 as *mut c_void,
-                                         PCSTR(ptr::null_mut()),
-                                         &mut startupinfo,
-                                         &mut process_information,
+            let process = CreateProcessA(
+                PCSTR(path_to_binary),
+                PSTR(ptr::null_mut()),
+                ptr::null(),
+                ptr::null(),
+                BOOL(0),
+                creation_flags,
+                0 as *mut c_void,
+                PCSTR(ptr::null_mut()),
+                &mut startupinfo,
+                &mut process_information,
             );
 
             if process.as_bool() == true {
@@ -109,14 +119,14 @@ impl Debugger for Debugee {
                 //WaitForSingleObject(process_information.hProcess, 0xFFFFFFFF);
             }
         }
-        0
     }
     fn create_process(&mut self) -> u32 {
         todo!()
     }
     fn open_process(&mut self, pid: u32) -> HANDLE {
         unsafe {
-            let handle: HANDLE = OpenProcess(PROCESS_ALL_ACCESS, false, pid).expect("Failed to open the process");
+            let handle: HANDLE =
+                OpenProcess(PROCESS_ALL_ACCESS, false, pid).expect("Failed to open the process");
             println!("[+] OpenProcess is successful!");
             handle
         }
@@ -129,20 +139,26 @@ impl Debugger for Debugee {
             let mut temp = String::new();
             println!("Enter:");
             io::stdin().read_line(&mut temp).unwrap();
+
+            self.debug_set_process_kill_on_exit();
+
             println!("[*] Trying to Debug Active Process");
             if DebugActiveProcess(pid).as_bool() == true {
                 self.debugger_active = true;
                 self.pid = pid;
                 println!("[+] Debugging active process!");
-            }
-            else {
+            } else {
                 println!("[-] Unable to attach to the process.");
                 let win32_error = GetLastError();
-                println!("WIN32_ERROR: {:?}, Error message: {:?}", win32_error, win32_error.to_hresult().message());
+                println!(
+                    "WIN32_ERROR: {:?}, Error message: {:?}",
+                    win32_error,
+                    win32_error.to_hresult().message()
+                );
             }
         }
     }
-    fn debug_handler(&mut self) -> u32 {
+    fn debug_handler(&mut self) {
         unsafe {
             let mut debug_event = DEBUG_EVENT::default();
 
@@ -162,34 +178,36 @@ impl Debugger for Debugee {
                     let create_process = debug_event.u.CreateProcessInfo;
 
                     self.process_handle = create_process.hProcess;
-
-                }
-                else if debug_event.dwDebugEventCode == CREATE_THREAD_DEBUG_EVENT {
+                } else if debug_event.dwDebugEventCode == CREATE_THREAD_DEBUG_EVENT {
                     println!("CREATE_THREAD_DEBUG_EVENT");
                     let create_thread = debug_event.u.CreateThread;
                     self.thread_handles.insert(tid, create_thread.hThread);
-                }
-                else if debug_event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT {
-                    //let process_handle = Some(create_process.hProcess);
-                    //println!("Inserting tid: {:?}, hThread: {:?}", tid, create_process.hThread);
-                    //self.thread_handles.insert(tid, create_process.hThread);
-
+                } else if debug_event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT {
                     self.exception = debug_event.u.Exception.ExceptionRecord.ExceptionCode;
-                    self.exception_address = debug_event.u.Exception.ExceptionRecord.ExceptionAddress;
+                    self.exception_address =
+                        debug_event.u.Exception.ExceptionRecord.ExceptionAddress;
 
-                    println!("Exception: {:?}, Exception Address: {:?}", self.exception, self.exception_address);
+                    println!(
+                        "Exception: {:?}, Exception Address: {:?}",
+                        self.exception, self.exception_address
+                    );
 
                     if self.exception == EXCEPTION_ACCESS_VIOLATION {
                         println!("Access Violation Detected.");
-                        println!("Exception: {:?}, Exception Address: {:?}", self.exception, self.exception_address);
+                        println!(
+                            "Exception: {:?}, Exception Address: {:?}",
+                            self.exception, self.exception_address
+                        );
 
                         self.get_thread_context(tid);
-                        let filename_raw = format!("crash_{:08x}_{:08x}.dmp", self.exception.0, self.exception_address as usize);
+                        let filename_raw = format!(
+                            "crash_{:08x}_{:08x}.dmp",
+                            self.exception.0, self.exception_address as usize
+                        );
                         let filename_c = filename_raw.clone();
                         let filename = CString::new(filename_raw).unwrap();
-                        let filename = filename.as_bytes_with_nul().as_ptr();                        
+                        let filename = filename.as_bytes_with_nul().as_ptr();
                         println!("Creating file");
-                        
                         if !Path::new(&filename_c).is_file() {
                             let fd = CreateFileA(
                                 PCSTR(filename),
@@ -223,43 +241,48 @@ impl Debugger for Debugee {
                                 MiniDumpWithFullMemory | MiniDumpWithHandleData,
                                 &mei,
                                 ptr::null_mut(),
-                                ptr::null_mut()
+                                ptr::null_mut(),
                             );
                             if dump_status.as_bool() != true {
                                 println!("MiniDumpWriteDump error");
                                 let win32_error = GetLastError();
-                                println!("WIN32_ERROR: {:?}, Error message: {:?}", win32_error, win32_error.to_hresult().message());            
+                                println!(
+                                    "WIN32_ERROR: {:?}, Error message: {:?}",
+                                    win32_error,
+                                    win32_error.to_hresult().message()
+                                );
                             }
                             println!("[+] MiniDump");
                         }
-                    }
-                    else if self.exception == EXCEPTION_BREAKPOINT {
+                        self.detach();
+                        self.terminate_process(self.h_process);
+                    } else if self.exception == EXCEPTION_BREAKPOINT {
                         println!("EXCEPTION_BREAKPOINT");
-                    }
-                    else if self.exception == EXCEPTION_GUARD_PAGE {
+                    } else if self.exception == EXCEPTION_GUARD_PAGE {
                         println!("EXCEPTION_GUARD_PAGE");
-                    }
-                    else if self.exception == EXCEPTION_SINGLE_STEP {
+                    } else if self.exception == EXCEPTION_SINGLE_STEP {
                         println!("EXCEPTION_SINGLE_STEP");
                     }
-                }
-                else if debug_event.dwDebugEventCode == LOAD_DLL_DEBUG_EVENT {
+                } else if debug_event.dwDebugEventCode == LOAD_DLL_DEBUG_EVENT {
                     println!("LOAD_DLL_DEBUG_EVENT");
-                }
-                else if debug_event.dwDebugEventCode == EXIT_THREAD_DEBUG_EVENT {
+                } else if debug_event.dwDebugEventCode == EXIT_THREAD_DEBUG_EVENT {
                     println!("EXIT_THREAD_DEBUG_EVENT");
-                    assert!(self.thread_handles.remove(&tid).is_some(), "Got exit threat event for nonexistant thread");
-                }
-                else if debug_event.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT {
+                    assert!(
+                        self.thread_handles.remove(&tid).is_some(),
+                        "Got exit threat event for nonexistant thread"
+                    );
+                } else if debug_event.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT {
                     println!("EXIT_PROCESS_DEBUG_EVENT");
-                }
-                else if debug_event.dwDebugEventCode == UNLOAD_DLL_DEBUG_EVENT {
+                } else if debug_event.dwDebugEventCode == UNLOAD_DLL_DEBUG_EVENT {
                     println!("UNLOAD_DLL_DEBUG_EVENT");
                 }
-                ContinueDebugEvent(debug_event.dwProcessId, debug_event.dwThreadId, continue_status.0.try_into().unwrap());
+                ContinueDebugEvent(
+                    debug_event.dwProcessId,
+                    debug_event.dwThreadId,
+                    continue_status.0.try_into().unwrap(),
+                );
             }
         }
-        0
     }
     fn open_thread(&mut self, thread_id: u32) -> HANDLE {
         unsafe {
@@ -267,20 +290,24 @@ impl Debugger for Debugee {
             if handle.is_invalid() == true {
                 println!("[*] Could not obtain a valid thread handle");
                 HANDLE(-1)
-            }
-            else{
+            } else {
                 self.h_thread
             }
         }
     }
-    fn get_thread_context(&mut self, thread_id: u32){
+    fn get_thread_context(&mut self, thread_id: u32) {
         unsafe {
-            if GetThreadContext(self.thread_handles[&thread_id], &mut self.context).as_bool() == true {
+            if GetThreadContext(self.thread_handles[&thread_id], &mut self.context).as_bool()
+                == true
+            {
                 println!("[+] Got thread context");
-            }
-            else {
+            } else {
                 let win32_error = GetLastError();
-                println!("WIN32_ERROR: {:?}, Error message: {:?}", win32_error, win32_error.to_hresult().message());
+                println!(
+                    "WIN32_ERROR: {:?}, Error message: {:?}",
+                    win32_error,
+                    win32_error.to_hresult().message()
+                );
                 println!("[*] Failed to get thread context!");
             }
         }
@@ -309,31 +336,64 @@ impl Debugger for Debugee {
             CloseHandle(snapshot);
         }
     }
+    fn debug_set_process_kill_on_exit(&mut self) {
+        unsafe {
+            DebugSetProcessKillOnExit(true);
+        }
+    }
+    fn terminate_process(&mut self, h_process: HANDLE) {
+        let exit_code = 0;
+        unsafe {
+            if TerminateProcess(h_process, exit_code).as_bool() == true {
+                println!(
+                    "[+] Process {} terminated successfuly!",
+                    self.get_process_id(h_process)
+                );
+            } else {
+                println!("[-] TerminateProcess failed!");
+            }
+        }
+    }
+    fn get_process_id(&mut self, h_process: HANDLE) -> u32 {
+        unsafe {
+            let pid = GetProcessId(h_process);
+            if pid == 0 {
+                println!("[-] Failed to get Process ID");
+                pid
+            } else {
+                println!("[+] Process ID is: {}", pid);
+                pid
+            }
+        }
+    }
     fn detach(&mut self) {
         unsafe {
             if DebugActiveProcessStop(self.pid).as_bool() == true {
                 println!("[+] Detached successfully!");
-            }
-            else{
+                self.debugger_active = false;
+            } else {
                 println!("[-] An error occurred while detaching");
             }
         }
     }
 }
 
-fn main() -> io::Result<()> {
+fn main() {
     let mut x = Debugee {
         ..Default::default()
     };
-    let mut calc_exe = r"C:\win7calc\calc.exe".to_string();
-
-    let mut pid = String::new();
-    println!("Enter process id to attach:");
-    io::stdin().read_line(&mut pid).expect("Enter an integer");
-    let pid: u32 = pid.trim().parse().unwrap();
-    println!("You have entered: {}", pid);
-    x.attach_process(pid);
-    //x.load(calc_exe);
-    x.run();
-    Ok(())
+    let mut input = String::new();
+    println!("Enter process path");
+    io::stdin()
+        .read_line(&mut input)
+        .expect("Failed to get input");
+    let input = input.trim();
+    println!("Your input: {}", input);
+    loop {
+        let process = Command::new(input).spawn().expect("Failed to run program");
+        let pid = process.id();
+        println!("Process ID: {}", pid);
+        x.attach_process(pid);
+        x.run();
+    }
 }
