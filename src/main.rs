@@ -1,5 +1,5 @@
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashSet, HashMap};
 use std::ffi::c_void;
 use std::ffi::CString;
 use std::io;
@@ -15,6 +15,7 @@ use windows::{
     Win32::System::Diagnostics::ToolHelp::*, Win32::System::Kernel::*,
     Win32::System::LibraryLoader::*, Win32::System::Memory::*, Win32::System::SystemServices::*,
     Win32::System::Threading::*, Win32::UI::WindowsAndMessaging::*,
+    Win32::System::ProcessStatus::*,
 };
 
 const CONTEXT_FULL: u32 = 0x00010007;
@@ -29,7 +30,7 @@ struct Debugee {
     debugger_active: bool,
     h_thread: HANDLE,
     context: CONTEXT, // ?
-    exception: NTSTATUS,
+    exception_code: NTSTATUS,
     exception_address: *mut c_void,
     thread_list: Vec<u32>,
     thread_handles: HashMap<u32, HANDLE>,
@@ -64,7 +65,7 @@ impl Default for Debugee {
                 ContextFlags: CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS,
                 ..Default::default()
             },
-            exception: NTSTATUS::default(),
+            exception_code: NTSTATUS::default(),
             exception_address: std::ptr::null_mut(),
             thread_list: Vec::new(),
             thread_handles: HashMap::new(),
@@ -180,27 +181,32 @@ impl Debugger for Debugee {
                     let create_thread = debug_event.u.CreateThread;
                     self.thread_handles.insert(tid, create_thread.hThread);
                 } else if debug_event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT {
-                    self.exception = debug_event.u.Exception.ExceptionRecord.ExceptionCode;
-                    self.exception_address =
-                        debug_event.u.Exception.ExceptionRecord.ExceptionAddress;
+                    let exception_record = debug_event.u.Exception.ExceptionRecord;
+                    self.exception_code = exception_record.ExceptionCode;
+                    self.exception_address = exception_record.ExceptionAddress;
 
-                    println!(
-                        "Exception: {:?}, Exception Address: {:?}",
-                        self.exception, self.exception_address
-                    );
-
-                    if self.exception == EXCEPTION_ACCESS_VIOLATION {
+                    if self.exception_code == EXCEPTION_ACCESS_VIOLATION {
                         println!("Access Violation Detected.");
                         println!(
-                            "Exception: {:?}, Exception Address: {:?}",
-                            self.exception, self.exception_address
+                            "Exception: {:?}, Exception Address: {:?}, Thread ID: {}",
+                            self.exception_code, self.exception_address, tid
                         );
 
                         self.get_thread_context(tid);
+                        let mut err_type = String::new();
+                        if exception_record.ExceptionInformation[0] == 0 {
+                            err_type = "read".to_string();
+                        } else if exception_record.ExceptionInformation[0] == 1 {
+                            err_type = "write".to_string();
+                        } else if exception_record.ExceptionInformation[0] == 8 {
+                            err_type = "dep".to_string();
+                        }
+                        
                         let filename_raw = format!(
-                            "crash_{:08x}_{:08x}.dmp",
-                            self.exception.0, self.exception_address as usize
+                            "crash_{:08x}_{}_{:08x}.dmp",
+                            self.exception_code.0, err_type, self.exception_address as usize
                         );
+
                         let filename_c = filename_raw.clone();
                         let filename = CString::new(filename_raw).unwrap();
                         let filename = filename.as_bytes_with_nul().as_ptr();
@@ -253,11 +259,11 @@ impl Debugger for Debugee {
                         }
                         self.detach();
                         self.terminate_process(self.h_process);
-                    } else if self.exception == EXCEPTION_BREAKPOINT {
+                    } else if self.exception_code == EXCEPTION_BREAKPOINT {
                         println!("EXCEPTION_BREAKPOINT");
-                    } else if self.exception == EXCEPTION_GUARD_PAGE {
+                    } else if self.exception_code == EXCEPTION_GUARD_PAGE {
                         println!("EXCEPTION_GUARD_PAGE");
-                    } else if self.exception == EXCEPTION_SINGLE_STEP {
+                    } else if self.exception_code == EXCEPTION_SINGLE_STEP {
                         println!("EXCEPTION_SINGLE_STEP");
                     }
                 } else if debug_event.dwDebugEventCode == LOAD_DLL_DEBUG_EVENT {
