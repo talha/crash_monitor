@@ -17,6 +17,8 @@ use windows::{
     Win32::System::Threading::*, Win32::UI::WindowsAndMessaging::*,
     Win32::System::ProcessStatus::*,
 };
+use std::fmt::Write;
+use rand::prelude::*;
 
 const CONTEXT_FULL: u32 = 0x00010007;
 const CONTEXT_DEBUG_REGISTERS: u32 = 0x00010010;
@@ -36,6 +38,7 @@ struct Debugee {
     thread_handles: HashMap<u32, HANDLE>,
 }
 
+
 pub trait Debugger {
     fn run(&mut self);
     fn load(&mut self, path_to_binary: String);
@@ -50,6 +53,7 @@ pub trait Debugger {
     fn debug_set_process_kill_on_exit(&mut self);
     fn terminate_process(&mut self, h_process: HANDLE);
     fn get_process_id(&mut self, h_process: HANDLE) -> u32;
+    fn get_hash(&mut self, input: usize) -> String;
     fn detach(&mut self);
 }
 
@@ -201,10 +205,13 @@ impl Debugger for Debugee {
                         } else if exception_record.ExceptionInformation[0] == 8 {
                             err_type = "dep".to_string();
                         }
-                        
+                        let mut rng = rand::thread_rng();
+                        let r_num: u32 = rng.gen();
+                        let random_hash = self.get_hash(r_num.try_into().unwrap());
+                    
                         let filename_raw = format!(
-                            "crash_{:08x}_{}_{:08x}.dmp",
-                            self.exception_code.0, err_type, self.exception_address as usize
+                            "crash_{:08x}_{}_{:08x}_{}.dmp",
+                            self.exception_code.0, err_type, self.exception_address as usize, random_hash
                         );
 
                         let filename_c = filename_raw.clone();
@@ -369,6 +376,14 @@ impl Debugger for Debugee {
             }
         }
     }
+    fn get_hash(&mut self, input: usize) -> String{
+        let mut hasher = Sha256::new();
+        hasher.update(input.to_string());
+        let result = hasher.finalize();
+        let mut temp = String::new();
+        write!(&mut temp, "{:x}", result);
+        temp
+    }
     fn detach(&mut self) {
         unsafe {
             if DebugActiveProcessStop(self.pid).as_bool() == true {
@@ -385,6 +400,7 @@ fn main() {
     let mut x = Debugee {
         ..Default::default()
     };
+
     let mut input = String::new();
     println!("Enter process path");
     io::stdin()
