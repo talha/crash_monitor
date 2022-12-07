@@ -2,12 +2,13 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashSet, HashMap};
 use std::ffi::c_void;
 use std::ffi::CString;
-use std::io;
+use std::io::prelude::*;
+use std::io::{self, Read, Write};
 use std::os::windows::ffi::EncodeWide;
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering, AtomicIsize, AtomicI32};
 use std::ptr;
-use std::thread::sleep;
 use std::time::Duration;
 use windows::{
     core::*, Data::Xml::Dom::*, Win32::Foundation::*, Win32::Security::*,
@@ -17,8 +18,12 @@ use windows::{
     Win32::System::Threading::*, Win32::UI::WindowsAndMessaging::*,
     Win32::System::ProcessStatus::*,
 };
-use std::fmt::Write;
+use std::fmt;
 use rand::prelude::*;
+use std::thread;
+use std::net::TcpListener;
+use tokio::sync::{mpsc, Mutex}; // Import MPSC channel functions from tokio
+use std::sync::Arc; // Import Arc for thread-safe reference counting
 
 const CONTEXT_FULL: u32 = 0x00010007;
 const CONTEXT_DEBUG_REGISTERS: u32 = 0x00010010;
@@ -36,16 +41,20 @@ struct Debugee {
     exception_address: *mut c_void,
     thread_list: Vec<u32>,
     thread_handles: HashMap<u32, HANDLE>,
+    has_crashed: bool,
 }
 
+pub struct CrashStatus {
+    crash_status: AtomicI32,
+}
 
 pub trait Debugger {
-    fn run(&mut self);
+    fn run(&mut self, cs: &Arc<CrashStatus>);
     fn load(&mut self, path_to_binary: String);
     fn create_process(&mut self) -> u32;
     fn open_process(&mut self, pid: u32) -> HANDLE;
     fn attach_process(&mut self, pid: u32);
-    fn debug_handler(&mut self);
+    fn debug_handler(&mut self, cs: &Arc<CrashStatus>);
     fn open_thread(&mut self, thread_id: u32) -> HANDLE;
     fn get_thread_context(&mut self, thread_id: u32);
     fn function_resolve(&mut self, dll: PCSTR, function: PCSTR);
@@ -54,8 +63,34 @@ pub trait Debugger {
     fn terminate_process(&mut self, h_process: HANDLE);
     fn get_process_id(&mut self, h_process: HANDLE) -> u32;
     fn get_hash(&mut self, input: usize) -> String;
+    //fn set_crash_status(&mut self, has_crashed: bool);
+    //fn get_crash_status(&mut self) -> bool;
     fn detach(&mut self);
 }
+
+pub trait X {
+    fn get_cs(&mut self) -> i32;
+    fn set_cs(&mut self, x: i32);
+}
+
+impl X for CrashStatus {
+    fn get_cs(&mut self) -> i32 {
+        self.crash_status.load(Ordering::SeqCst)
+    }
+
+    fn set_cs(&mut self, x: i32) {
+        self.crash_status.store(x, Ordering::SeqCst);
+    }
+}
+
+impl Default for CrashStatus {
+    fn default() -> CrashStatus {
+        CrashStatus {
+            crash_status: 0.into(),
+        }
+    }
+}
+
 
 impl Default for Debugee {
     fn default() -> Debugee {
@@ -64,6 +99,7 @@ impl Default for Debugee {
             pid: 0,
             process_handle: Default::default(),
             debugger_active: false,
+            has_crashed: false,
             h_thread: Default::default(),
             context: CONTEXT {
                 ContextFlags: CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS,
@@ -77,10 +113,11 @@ impl Default for Debugee {
     }
 }
 
+
 impl Debugger for Debugee {
-    fn run(&mut self) {
+    fn run(&mut self, cs: &Arc<CrashStatus>) {
         while self.debugger_active == true {
-            self.debug_handler();
+            self.debug_handler(cs);
         }
     }
 
@@ -160,11 +197,12 @@ impl Debugger for Debugee {
             }
         }
     }
-    fn debug_handler(&mut self) {
+    fn debug_handler(&mut self, cs: &Arc<CrashStatus>) {
         unsafe {
             let mut debug_event = DEBUG_EVENT::default();
 
             let continue_status = DBG_CONTINUE;
+
 
             if WaitForDebugEvent(&mut debug_event, 100).as_bool() == true {
                 //let create_process = CREATE_PROCESS_DEBUG_INFO::default();
@@ -173,7 +211,7 @@ impl Debugger for Debugee {
                 //println!("Event Code: {:?}, Thread ID: {}", debug_event.dwDebugEventCode, debug_event.dwThreadId);
 
                 let tid = debug_event.dwThreadId;
-                let pid = debug_event.dwProcessId;
+                let pid = debug_event.dwProcessId;    
 
                 if debug_event.dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT {
                     println!("CREATE_PROCESS_DEBUG_EVENT");
@@ -263,6 +301,9 @@ impl Debugger for Debugee {
                                 );
                             }
                             println!("[+] MiniDump");
+                            
+                            // set crash status
+                            cs.as_ref().crash_status.fetch_add(1, Ordering::SeqCst);
                         }
                         self.detach();
                         self.terminate_process(self.h_process);
@@ -381,9 +422,12 @@ impl Debugger for Debugee {
         hasher.update(input.to_string());
         let result = hasher.finalize();
         let mut temp = String::new();
-        write!(&mut temp, "{:x}", result);
+        for i in result.iter() {
+            temp.push_str(&format!("{:x}", i));
+        }        
         temp
     }
+
     fn detach(&mut self) {
         unsafe {
             if DebugActiveProcessStop(self.pid).as_bool() == true {
@@ -396,11 +440,30 @@ impl Debugger for Debugee {
     }
 }
 
-fn main() {
-    let mut x = Debugee {
-        ..Default::default()
-    };
 
+fn serve_tcp_server(cs: Arc<CrashStatus>) {
+    let listener = TcpListener::bind("0.0.0.0:4444").unwrap();
+    for stream in listener.incoming() {
+        let mut stream = stream.unwrap();
+        
+        let mut current_crash_status: String =  cs.as_ref().crash_status.load(Ordering::SeqCst).to_string();
+                    
+        println!("Current Crash Status: {}", current_crash_status);
+        stream.write(current_crash_status.as_bytes()).unwrap();
+
+        if current_crash_status == "1" {
+            // sleep 3 seconds
+            thread::sleep(Duration::from_secs(3));
+        }
+        cs.crash_status.store(0, Ordering::SeqCst);
+        drop(stream);
+    }
+}
+
+fn main() {
+
+    let debugee = Debugee::default();
+    
     let mut input = String::new();
     println!("Enter process path");
     io::stdin()
@@ -408,11 +471,18 @@ fn main() {
         .expect("Failed to get input");
     let input = input.trim();
     println!("Your input: {}", input);
+    let mut debugee = Debugee::default();
+
+    let cs = Arc::new(CrashStatus::default()); 
+    let mut cs_clone = &cs.clone();
+
+    let handle = thread::spawn(move || serve_tcp_server(cs));
+    
     loop {
         let process = Command::new(input).spawn().expect("Failed to run program");
         let pid = process.id();
         println!("Process ID: {}", pid);
-        x.attach_process(pid);
-        x.run();
+        debugee.attach_process(pid);
+        debugee.run(cs_clone);
     }
 }
