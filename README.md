@@ -1,5 +1,5 @@
 # Crash Monitor
-Crash Monitor is a tool that acts as a debugger and monitors crashes in a program. If a monitored program crashes by receiving "Access Violation" exception program saves current program state by creating a crash dump. It also serves the current crash status on a sparate thread to integrate with a external fuzzer. See [boofuzz integration](#example-run-with-boofuzz).
+Crash Monitor is a tool that acts as a debugger and monitors crashes in a currently fuzzed program. If a monitored program crashes by receiving "Access Violation" exception, program saves the current program state by creating a crash dump. It also serves the current crash status on a sparate thread to integrate with a external fuzzer. See [boofuzz integration](#example-run-with-boofuzz).
 
 ## Building and Running
 To build and run Crash Monitor, you will need the `nightly-i686-pc-windows-msvc` toolchain. You can install it using `rustup install nightly-i686-pc-windows-msvc`.
