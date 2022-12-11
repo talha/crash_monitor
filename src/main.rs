@@ -7,7 +7,7 @@ use std::io::{self, Read, Write};
 use std::os::windows::ffi::EncodeWide;
 use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering, AtomicIsize, AtomicI32};
+use std::sync::atomic::{AtomicUsize, Ordering, AtomicIsize, AtomicI32, AtomicU32};
 use std::ptr;
 use std::time::Duration;
 use windows::{
@@ -22,7 +22,6 @@ use std::fmt;
 use rand::prelude::*;
 use std::thread;
 use std::net::TcpListener;
-use tokio::sync::{mpsc, Mutex}; // Import MPSC channel functions from tokio
 use std::sync::Arc; // Import Arc for thread-safe reference counting
 
 const CONTEXT_FULL: u32 = 0x00010007;
@@ -41,11 +40,11 @@ struct Debugee {
     exception_address: *mut c_void,
     thread_list: Vec<u32>,
     thread_handles: HashMap<u32, HANDLE>,
-    has_crashed: bool,
 }
 
 pub struct CrashStatus {
     crash_status: AtomicI32,
+    total_crashes: AtomicU32,
 }
 
 pub trait Debugger {
@@ -63,8 +62,6 @@ pub trait Debugger {
     fn terminate_process(&mut self, h_process: HANDLE);
     fn get_process_id(&mut self, h_process: HANDLE) -> u32;
     fn get_hash(&mut self, input: usize) -> String;
-    //fn set_crash_status(&mut self, has_crashed: bool);
-    //fn get_crash_status(&mut self) -> bool;
     fn detach(&mut self);
 }
 
@@ -87,6 +84,7 @@ impl Default for CrashStatus {
     fn default() -> CrashStatus {
         CrashStatus {
             crash_status: 0.into(),
+            total_crashes: 0.into(),
         }
     }
 }
@@ -99,7 +97,6 @@ impl Default for Debugee {
             pid: 0,
             process_handle: Default::default(),
             debugger_active: false,
-            has_crashed: false,
             h_thread: Default::default(),
             context: CONTEXT {
                 ContextFlags: CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS,
@@ -234,6 +231,11 @@ impl Debugger for Debugee {
                             self.exception_code, self.exception_address, tid
                         );
 
+                        // set crash status
+                        cs.as_ref().crash_status.fetch_add(1, Ordering::SeqCst);
+                        cs.as_ref().total_crashes.fetch_add(1, Ordering::SeqCst);
+                        let crash_no = cs.as_ref().total_crashes.load(Ordering::SeqCst);
+                        
                         self.get_thread_context(tid);
                         let mut err_type = String::new();
                         if exception_record.ExceptionInformation[0] == 0 {
@@ -243,13 +245,13 @@ impl Debugger for Debugee {
                         } else if exception_record.ExceptionInformation[0] == 8 {
                             err_type = "dep".to_string();
                         }
-                        let mut rng = rand::thread_rng();
-                        let r_num: u32 = rng.gen();
-                        let random_hash = self.get_hash(r_num.try_into().unwrap());
+                        // let mut rng = rand::thread_rng();
+                        // let r_num: u32 = rng.gen();
+                        // let random_hash = self.get_hash(r_num.try_into().unwrap());
                     
                         let filename_raw = format!(
-                            "crash_{:08x}_{}_{:08x}_{}.dmp",
-                            self.exception_code.0, err_type, self.exception_address as usize, random_hash
+                            "crash_{}_{:08x}_{}_{:08x}.dmp",
+                            crash_no, self.exception_code.0, err_type, self.exception_address as usize
                         );
 
                         let filename_c = filename_raw.clone();
@@ -302,8 +304,6 @@ impl Debugger for Debugee {
                             }
                             println!("[+] MiniDump");
                             
-                            // set crash status
-                            cs.as_ref().crash_status.fetch_add(1, Ordering::SeqCst);
                         }
                         self.detach();
                         self.terminate_process(self.h_process);
@@ -446,12 +446,14 @@ fn serve_tcp_server(cs: Arc<CrashStatus>) {
     for stream in listener.incoming() {
         let mut stream = stream.unwrap();
         
-        let mut current_crash_status: String =  cs.as_ref().crash_status.load(Ordering::SeqCst).to_string();
+        let current_crash_status: String =  cs.as_ref().crash_status.load(Ordering::SeqCst).to_string();
                     
         println!("Current Crash Status: {}", current_crash_status);
         stream.write(current_crash_status.as_bytes()).unwrap();
 
         if current_crash_status == "1" {
+            // TODO implement better synchronization
+
             // sleep 3 seconds
             thread::sleep(Duration::from_secs(3));
         }
