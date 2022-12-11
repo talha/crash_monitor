@@ -20,7 +20,7 @@ crash_monitor.exe
 ## Example run with Boofuzz
 An example boofuzz file to fuzz vulnserver can be found [here](boofuzz_fuzzer.py). Edit the IP and PORT for your configuration.
 
-Execute crash_montior.exe with Administrator rights or in elevated powershell run.
+Execute crash_montior.exe with Administrator rights or in elevated powershell.
 ```
 crash_monitor.exe
 > C:\path\to\vulnserver.exe # path to the target program
